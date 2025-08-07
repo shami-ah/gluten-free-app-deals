@@ -1218,6 +1218,23 @@ def main() -> List[Dict]:
     print(f"\n🎉 SUCCESS: {len(final_deals)} premium deals ready")
     return final_deals
 
+from flask import jsonify, Request
+from datetime import datetime
+
+def get_gluten_free_deals(request: Request):
+    """
+    HTTP Cloud Function entry point.
+    Runs `main()` and returns JSON.
+    """
+    try:
+        deals = main()
+        return jsonify({
+            "generatedAt": datetime.utcnow().isoformat() + "Z",
+            "count": len(deals),
+            "deals": deals
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     start = datetime.now()
