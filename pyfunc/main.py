@@ -152,23 +152,41 @@ def generate_comprehensive_queries() -> Dict[str, List[str]]:
     print(f"📊 Target coverage: {len(all_stores)} stores + {len(all_brands)} brands")
 
     llm_prompt = f"""
-You are a comprehensive gluten-free deal researcher building a complete database. Generate search queries to find ALL current gluten-free deals, coupons, promo codes, sales, and discounts.
+You are a gluten-free deals expert creating targeted search queries to find REAL shopping deals, coupons, and promotions for people with celiac disease and gluten sensitivity.
 
-- Generate exactly 2 queries for EACH store ({len(all_stores)} stores)
-- Generate exactly 2 queries for EACH brand ({len(all_brands)} brands)
-- Use indicators like {current_month_year}, {current_year}, today, current, active
-- Each query MUST include "gluten free" or "gluten-free"
-One query per line; no numbering or bullets.
-Current date: {current_month_year}
+FOCUS ON: Active deals, discounts, coupons, sales, promo codes, BOGO offers, cashback, rebates
+CURRENT DATE: {current_month_year}
+
+Generate search queries that find:
+1. Store-specific GF deals (Target, Walmart, Kroger, Costco, Amazon, etc.)
+2. Brand-specific GF promotions (Bob's Red Mill, Schar, Enjoy Life, etc.) 
+3. Current/active deals (use: {current_month_year}, {current_year}, today, this week, active, current)
+4. Specific deal types (coupons, promo codes, sales, BOGO, cashback)
+
+REQUIREMENTS:
+- Each query must include "gluten free" OR "gluten-free" OR "GF" 
+- Include deal words: coupon, sale, discount, promo, deal, offer
+- Include timing: {current_month_year}, {current_year}, today, current, active, new
+- Focus on SHOPPING deals, not recipes or general info
+- Make queries specific to find actual promotional offers
+
+Examples of GOOD queries:
+"Target gluten free coupons {current_month_year}"
+"Schar gluten-free products sale {current_year}"  
+"Kroger GF deals this week"
+"Bob's Red Mill discount codes active {current_year}"
+"Amazon gluten free BOGO offers today"
+
+Generate 60 diverse queries (one per line, no numbering):
 """
     try:
         resp = openai.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role":"system","content":"You are a search query expert for gluten-free deals."},
+                {"role":"system","content":"You are a shopping deals expert specializing in gluten-free product promotions and discounts."},
                 {"role":"user","content":llm_prompt}
             ],
-            max_tokens=2000, temperature=0.7, top_p=0.9
+            max_tokens=2000, temperature=0.8, top_p=0.9
         )
         generated = resp.choices[0].message.content.strip().splitlines()
         clean = [q.strip("•- ").strip() for q in generated if q and len(q.strip()) > 15 and not re.match(r'^\d+[\.\)]', q.strip())]
@@ -425,14 +443,138 @@ def enhance_deal_metadata(deals: List[Dict]) -> List[Dict]:
     return enhanced
 
 def is_real_deal(item: Dict) -> bool:
+    """Enhanced real deal detection with better filtering"""
     link = item.get("link","") or ""
     title = str(item.get("title","")).lower()
     snippet = str(item.get("snippet","")).lower()
     text = f"{title} {snippet}"
+    
+    # Must have valid HTTP link
     if not link.startswith(("http://","https://")): return False
-    if not any(kw in text for kw in [k.lower() for k in GF_KEYWORDS]): return False
-    if not any(sig in text for sig in [d.lower() for d in DEAL_INDICATORS]): return False
+    
+    # Must contain GF keywords (more flexible)
+    gf_keywords = [
+        "gluten free", "gluten-free", "gf", "celiac", "wheat free", 
+        "gluten conscious", "gluten sensitive"
+    ]
+    if not any(kw in text for kw in gf_keywords): return False
+    
+    # Must contain deal indicators (more flexible)
+    deal_keywords = [
+        "coupon", "promo", "discount", "save", "off", "deal", "sale", 
+        "special", "offer", "rebate", "cashback", "bogo", "free shipping",
+        "clearance", "promotion", "code"
+    ]
+    if not any(kw in text for kw in deal_keywords): return False
+    
+    # Filter out obvious non-shopping content
+    exclude_patterns = [
+        "recipe", "how to make", "what is gluten", "gluten intolerance symptoms",
+        "celiac disease diagnosis", "gluten free diet tips", "restaurant review",
+        "blog about", "article about", "guide to", "understanding celiac"
+    ]
+    if any(pattern in text for pattern in exclude_patterns): return False
+    
     return True
+
+def final_relevance_filter(deals: List[Dict]) -> List[Dict]:
+    """Smart final filter to remove irrelevant content while keeping good deals"""
+    print(f"🎯 Final relevance filter: Processing {len(deals)} deals...")
+    
+    filtered_deals = []
+    filter_stats = {"kept": 0, "removed_blogs": 0, "removed_info": 0, "removed_expired": 0, "removed_spam": 0}
+    
+    for deal in deals:
+        try:
+            title = str(deal.get("title", "")).lower()
+            snippet = str(deal.get("snippet", "")).lower()  
+            link = str(deal.get("link", "")).lower()
+            text = f"{title} {snippet}"
+            
+            should_remove = False
+            removal_reason = ""
+            
+            # Remove blogs and informational content (not deals)
+            blog_indicators = [
+                "blog", "article", "post", "guide to", "how to", "what is", 
+                "understanding", "living with", "tips for", "managing celiac",
+                "gluten free lifestyle", "celiac awareness", "gluten sensitivity guide"
+            ]
+            if any(indicator in text for indicator in blog_indicators) and not any(deal_word in text for deal_word in ["coupon", "discount", "sale", "promo", "deal", "offer"]):
+                should_remove = True
+                removal_reason = "blog_content"
+            
+            # Remove informational/educational content  
+            info_indicators = [
+                "what is celiac", "gluten intolerance symptoms", "diagnosis", 
+                "gluten free diet benefits", "celiac disease facts",
+                "gluten sensitivity explained", "wheat allergy vs"
+            ]
+            if any(indicator in text for indicator in info_indicators):
+                should_remove = True  
+                removal_reason = "educational_content"
+            
+            # Remove clearly expired or invalid deals
+            expired_indicators = [
+                "expired", "ended", "no longer valid", "promotion closed",
+                "offer has ended", "deal expired", "sale ended", "coupon expired"
+            ]
+            if any(indicator in text for indicator in expired_indicators):
+                should_remove = True
+                removal_reason = "expired_deal"
+            
+            # Remove spam/clickbait content
+            spam_indicators = [
+                "you won't believe", "amazing secret", "doctors hate", 
+                "one weird trick", "shocking truth", "incredible discovery",
+                "miracle cure", "secret formula", "lose weight fast"
+            ]
+            if any(indicator in text for indicator in spam_indicators):
+                should_remove = True
+                removal_reason = "spam_content"
+            
+            # Remove non-shopping domains (keep if they have strong deal indicators)
+            non_shopping_domains = ["wikipedia", "webmd", "healthline", "mayoclinic", "celiac.org"]
+            strong_deal_indicators = ["coupon code", "promo code", "% off", "$ off", "free shipping", "bogo"]
+            
+            is_non_shopping = any(domain in link for domain in non_shopping_domains)
+            has_strong_deal = any(indicator in text for indicator in strong_deal_indicators)
+            
+            if is_non_shopping and not has_strong_deal:
+                should_remove = True
+                removal_reason = "non_shopping_domain"
+            
+            # Keep the deal if it passes all filters
+            if not should_remove:
+                # Boost deals from known good sources
+                good_domains = ["target.com", "walmart.com", "kroger.com", "costco.com", "amazon.com", 
+                               "bobsredmill.com", "schar.com", "enjoylifefoods.com", "slickdeals.net", 
+                               "retailmenot.com", "coupons.com"]
+                
+                if any(domain in link for domain in good_domains):
+                    deal["source_boost"] = True
+                
+                filtered_deals.append(deal)
+                filter_stats["kept"] += 1
+            else:
+                # Track removal reasons
+                if removal_reason == "blog_content":
+                    filter_stats["removed_blogs"] += 1
+                elif removal_reason in ["educational_content", "non_shopping_domain"]:
+                    filter_stats["removed_info"] += 1
+                elif removal_reason == "expired_deal":
+                    filter_stats["removed_expired"] += 1 
+                elif removal_reason == "spam_content":
+                    filter_stats["removed_spam"] += 1
+                    
+        except Exception as e:
+            print(f"⚠️ Error in final filter: {e}")
+            filtered_deals.append(deal)  # Keep if error processing
+    
+    print(f"📊 Final filter results: {filter_stats}")
+    print(f"✅ Kept {len(filtered_deals)} relevant deals ({len(filtered_deals)/len(deals)*100:.1f}%)")
+    
+    return filtered_deals
 
 # ---------------- Main pipeline ----------------
 def main() -> List[Dict]:
@@ -475,13 +617,16 @@ def main() -> List[Dict]:
 
     validated = ai_powered_deal_validation(all_results)
     enhanced  = enhance_deal_metadata(validated)
+    
+    # ADD THE FINAL RELEVANCE FILTER HERE - This is the key addition!
+    filtered_deals = final_relevance_filter(enhanced)
 
-    # 🔁 Firestore replace-all
+    # 🔁 Firestore replace-all - Use filtered_deals instead of enhanced
     run_ts = datetime.utcnow()
-    _ = replace_deals_firestore(enhanced, run_ts)
+    _ = replace_deals_firestore(filtered_deals, run_ts)
 
-    print(f"\n🎉 SUCCESS: {len(enhanced)} premium deals saved to Firestore")
-    return enhanced
+    print(f"\n🎉 SUCCESS: {len(filtered_deals)} premium deals saved to Firestore")
+    return filtered_deals
 
 # ---------------- HTTP entry point ----------------
 from flask import jsonify, Request
